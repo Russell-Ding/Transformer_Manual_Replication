@@ -18,7 +18,7 @@ class Atten_Layers(nn.Module):
         K = self.w_key(input_key)
         V = self.w_value(input_values)
 
-        attention_matrix = torch.bmm(Q, K.transpose(-1,-2))/torch.sqrt(self.d_model) #### max_length, max_length
+        attention_matrix = torch.bmm(Q, K.transpose(-1,-2))/torch.sqrt(int(self.d_model/self.num_heads)) #### max_length, max_length
 
         if masked:
             #### need to set the upper part of the attention_matrix to -inf, so softmax will not apply weights
@@ -40,7 +40,7 @@ class Multi_Head_Layer(nn.Module):
         self.num_heads = num_heads
         self.d_model = d_model
         self.max_length = max_length
-        self.multiheads = []
+        self.multiheads = nn.ModuleList([])
         for _ in range(num_heads):
 
             scaled_doc_product_attention = Atten_Layers(max_length=512, num_heads=8, d_model=768)
@@ -62,6 +62,7 @@ class Bert_Base_Layer(nn.Module):
     #### single structure of the bert layer, there are N of it in the actual bert model
 
     def __init__(self, max_length = 512, num_heads = 8, d_model = 768, d_output = None, dropout = 0.1):
+        super().__init__()
         self.multihead_attention = Multi_Head_Layer(max_length, num_heads, d_model, d_output)
         self.dropout = nn.Dropout(dropout)
 
@@ -69,8 +70,9 @@ class Bert_Base_Layer(nn.Module):
             d_output = d_model
         self.normalization = nn.LayerNorm(d_output)
         #### 2 linear feedforward layers with ReLU in between
-        self.linear1 = nn.Linear(d_output, d_output)
-        self.linear2 = nn.Linear(d_output, d_output)
+        self.linear1 = nn.Linear(d_output, d_output*4)
+        #### 4 is not explicitly mentioned in the paper, but it is in section 3.3 the last sentence
+        self.linear2 = nn.Linear(d_output*4, d_output)
 
     def forward(self, input, masked = False):
         input_querys = input
@@ -78,7 +80,8 @@ class Bert_Base_Layer(nn.Module):
         input_values = input
         output1 = self.multihead_attention(input_querys, input_key, input_values, masked)
 
-        input_step2 = self.normalization(input+output1)
+        #### there is a dropout directly adfter the multhhead attention output
+        input_step2 = self.normalization(input+self.dropout(output1))
         output_step2 = self.linear1(input_step2)
         output_step2 = self.linear2(nn.ReLU(output_step2))
 
@@ -94,8 +97,6 @@ def generate_positional_embeddings(d_model, max_length, batch_size):
     :param batch_size: batch size of the input
     :return: positional embeddings
     '''
-
-    positions = torch.arange(max_length)
 
     res = torch.empty(batch_size, max_length, d_model)
 
@@ -116,7 +117,8 @@ class Bert_Encoder(nn.Module):
         self.embedding = nn.Embedding(num_vocab, d_model)
         self.positional_embeddings = generate_positional_embeddings(d_model, max_length, batch_size)
         self.num_attention_layers = num_attention_layers
-        self.atten_layers = [Bert_Base_Layer(max_length, num_heads, d_model, d_output, dropout) for _ in range(num_attention_layers)]
+        self.atten_layers = nn.ModuleList([Bert_Base_Layer(max_length, num_heads, d_model, d_output, dropout)
+                                           for _ in range(num_attention_layers)])
 
     def forward(self, input):
         #### input is token ID of size 512
